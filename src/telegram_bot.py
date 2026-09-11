@@ -1,0 +1,205 @@
+"""
+Telegram Automation System
+3.1 Daily Scheduled Report
+3.2 Real-time Flash News Alert
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from loguru import logger
+import pytz
+from telegram import Bot
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+
+from config.settings import get_settings
+from src.calendar_scanner import EconomicEvent
+from src.news_scanner import FlashNews
+from src.impact_analyzer import ImpactAnalyzer, ImpactItem
+
+
+class TelegramReporter:
+    def __init__(self):
+        self.settings = get_settings()
+        self.bot = Bot(token=self.settings.telegram_bot_token)
+        self.chat_id = self.settings.telegram_chat_id
+        self.tz = pytz.timezone(self.settings.timezone)
+        self.analyzer = ImpactAnalyzer()
+
+    async def send_daily_report(
+        self,
+        events: List[EconomicEvent],
+        news: List[FlashNews],
+        dxy_status: str = "ทรงตัว",
+        dxy_value: str = "N/A",
+    ) -> bool:
+        """
+        3.1 รายงานสรุปประจำวัน 07:00 น.
+        โครงสร้างตามสเปคเป๊ะ
+        """
+        analysis = self.analyzer.analyze(events, news, dxy_status, dxy_value)
+        now = datetime.now(self.tz)
+        date_str = now.strftime("%d/%m/%Y")
+
+        # Build message ตาม Template
+        lines = [
+            "📊 *สรุปภาวะตลาดและข่าวสารการลงทุนประจำวัน*",
+            f"📅 ประจำวันที่: {date_str} | ⏰ 07:00 น.",
+            f"🎯 *สินทรัพย์หลัก:* ทองคำ (XAUUSD)",
+            f"📉 *ดัชนีดอลลาร์ (DXY):* {dxy_status} ({dxy_value})",
+            "",
+            "---",
+            "🔴 *ข่าวผลกระทบสูง (High Impact):*",
+        ]
+
+        high_items = analysis["high_impact"]
+        if high_items:
+            for item in high_items[:5]:
+                sent = f" {item.sentiment_emoji}" if item.sentiment_emoji and item.sentiment_emoji != "⚪" else ""
+                lines.append(f"• {item.title}{sent} - {item.analysis}")
+        else:
+            lines.append("• ไม่มีข่าว High Impact ในช่วงนี้")
+
+        # Sentiment overview
+        news_items = [i for i in (analysis["high_impact"] + analysis["medium_impact"]) if i.source_type == "news"]
+        if news_items:
+            avg = sum(i.sentiment_score for i in news_items) / len(news_items)
+            emoji = "🟢" if avg > 0.2 else "🔴" if avg < -0.2 else "⚪"
+            lines.append("")
+            lines.append(f"📈 *Sentiment ทองคำ:* {emoji} {avg:+.2f} (Bull {sum(1 for i in news_items if i.gold_bias=='positive')} / Bear {sum(1 for i in news_items if i.gold_bias=='negative')})")
+
+        lines.append("")
+        lines.append("🗓️ *ปฏิทินเศรษฐกิจน่าจับตาวันนี้:*")
+
+        today_events = [
+            e for e in events
+            if e.time and e.time.date() == now.date()
+        ]
+        if not today_events:
+            today_events = events[:5]
+
+        if today_events:
+            for ev in today_events[:6]:
+                time_str = ev.time.strftime("%H:%M") if ev.time else "--:--"
+                forecast = ev.forecast or "-"
+                impact = "High" if ev.importance == "high" else "Medium"
+                lines.append(f"• {time_str} {ev.event} | คาดการณ์: {forecast} (ผลกระทบ: {impact})")
+        else:
+            lines.append("• ไม่มีตัวเลขสำคัญวันนี้")
+
+        lines.append("")
+        lines.append(f"💡 *กลยุทธ์ประจำวัน:* {analysis['strategy']}")
+        lines.append("")
+        lines.append("_การวิเคราะห์เพื่อข้อมูลเท่านั้น | Not Financial Advice_")
+
+        text = "\n".join(lines)
+        return await self._send(text)
+
+    async def send_flash_alert(
+        self,
+        news: FlashNews,
+        analysis_text: Optional[str] = None,
+        actual: Optional[str] = None,
+        forecast: Optional[str] = None,
+    ) -> bool:
+        """
+        3.2 ระบบแจ้งเตือนข่าวด่วนฉุกเฉิน
+        โครงสร้างตามสเปคเป๊ะ
+        """
+        time_str = news.time.strftime("%H:%M") if news.time else datetime.now(self.tz).strftime("%H:%M")
+
+        # Prefer sentiment summary when available
+        if analysis_text is None:
+            if news.sentiment and news.sentiment.confidence >= 0.35:
+                analysis_text = f"{news.sentiment.emoji} {news.sentiment.summary_th}"
+            else:
+                analysis_text = self.analyzer._build_news_analysis(news)
+
+        lines = [
+            "🚨 *[FLASH NEWS] แจ้งเตือนข่าวด่วนส่งผลกระทบสูง*",
+            "",
+            f"📌 *ข่าว:* {news.title_th} ({news.title_en})",
+            f"🏛️ *แหล่งข่าว:* {news.source} | ⏰ {time_str}",
+        ]
+
+        if actual or forecast:
+            a = actual or news.actual or "-"
+            f = forecast or news.forecast or "-"
+            lines.append(f"📊 *ตัวเลขจริง vs คาดการณ์:* Actual: {a} | Forecast: {f}")
+
+        # Sentiment block
+        if news.sentiment and news.sentiment.confidence >= 0.3:
+            s = news.sentiment
+            lines.append(
+                f"📈 *Sentiment:* {s.emoji} {s.label_th} "
+                f"(score {s.score:+.2f} | conf {s.confidence:.0%})"
+            )
+            if s.matched_phrases:
+                lines.append(f"🔑 *Keywords:* {', '.join(s.matched_phrases[:4])}")
+
+        lines.extend([
+            "",
+            "💡 *บทวิเคราะห์ต่อ [ทองคำ]:*",
+            analysis_text,
+            "",
+            "⚠️ *โปรดเพิ่มความระมัดระวังและบริหารความเสี่ยงในพอร์ตการลงทุน*",
+            "",
+            "_Not Financial Advice_",
+        ])
+
+        text = "\n".join(lines)
+        return await self._send(text)
+
+    async def send_full_report(
+        self,
+        events: List[EconomicEvent],
+        news: List[FlashNews],
+        dxy_status: str = "ทรงตัว",
+        dxy_value: str = "N/A",
+    ) -> bool:
+        """ส่งรายงานฉบับเต็ม (ส่วนที่ 4)"""
+        analysis = self.analyzer.analyze(events, news, dxy_status, dxy_value)
+        now = datetime.now(self.tz)
+        date_str = now.strftime("%d/%m/%Y %H:%M ICT")
+        report = self.analyzer.format_full_report(analysis, events, date_str)
+
+        # Telegram มี limit 4096 chars – แบ่งส่งถ้ายาวเกิน
+        if len(report) <= 4000:
+            return await self._send(report, parse_mode=ParseMode.MARKDOWN)
+        else:
+            # ส่งเป็นส่วนๆ
+            chunks = [report[i:i+3900] for i in range(0, len(report), 3900)]
+            success = True
+            for chunk in chunks:
+                ok = await self._send(chunk, parse_mode=ParseMode.MARKDOWN)
+                if not ok:
+                    success = False
+            return success
+
+    async def _send(self, text: str, parse_mode: str = ParseMode.MARKDOWN) -> bool:
+        try:
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True,
+            )
+            logger.info("Telegram message sent successfully")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram send failed: {e}")
+            # Fallback: try without parse_mode
+            try:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=text.replace("*", "").replace("_", ""),
+                    disable_web_page_preview=True,
+                )
+                return True
+            except Exception as e2:
+                logger.error(f"Telegram fallback also failed: {e2}")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected Telegram error: {e}")
+            return False

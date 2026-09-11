@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  gold-automation:
+    build: .
+    container_name: gold-trading-news-bot
+    restart: unless-stopped
+    env_file:
+      - ./config/.env
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Bangkok
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
