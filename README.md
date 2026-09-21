@@ -202,3 +202,17 @@ MIT License – ใช้งานได้อย่างอิสระ
 
 สร้างโดยระบบตามสเปคที่คุณกำหนดไว้ 100%  
 พร้อมใช้งานบน GitHub + Telegram Automation
+
+## 🧪 Economic Calendar E2E Test
+
+GitHub Actions workflow:
+
+`.github/workflows/economic_calendar_e2e.yml`
+
+Pipeline:
+
+`Economic Calendar → Date Validation → Medium/High Filter → Thai Formatter → Telegram`
+
+Run manually from **GitHub → Actions → Economic Calendar E2E Test → Run workflow**.
+
+The workflow also runs at **07:00 Asia/Bangkok, Monday-Friday** (00:00 UTC) as a smoke test. It refuses to send a calendar message when no verified events are returned, preventing fallback/sample data from being presented as real calendar data.
