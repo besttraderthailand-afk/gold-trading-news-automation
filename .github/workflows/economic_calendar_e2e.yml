@@ -1,0 +1,30 @@
+name: Economic Calendar E2E Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1-5"
+
+jobs:
+  economic-calendar-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Economic Calendar E2E
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TIMEZONE: Asia/Bangkok
+        run: python -m src.economic_calendar_e2e
