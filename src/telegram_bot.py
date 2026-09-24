@@ -2,6 +2,7 @@
 Telegram Automation System
 3.1 Daily Scheduled Report
 3.2 Real-time Flash News Alert
+3.3 Pre-release + Economic Data Release
 """
 from __future__ import annotations
 
@@ -149,6 +150,86 @@ class TelegramReporter:
 
         text = "\n".join(lines)
         return await self._send(text)
+
+
+    async def send_pre_release_alert(self, event: EconomicEvent) -> bool:
+        """แจ้งเตือนก่อนประกาศตัวเลขสำคัญ (pre-event)"""
+        time_str = event.time.strftime("%H:%M") if event.time else "--:--"
+        importance = "High" if event.importance == "high" else "Medium"
+        currency = event.currency or event.country or "-"
+        forecast = event.forecast or "ไม่พบข้อมูล"
+        previous = event.previous or "ไม่พบข้อมูล"
+        prep = event.impact_on_gold or "เตรียมรับความผันผวนช่วงประกาศ ลดขนาด Position หรือรอ Confirmation"
+
+        lines = [
+            "⏰ *[PRE-RELEASE] ใกล้ประกาศตัวเลขสำคัญ*",
+            "",
+            f"📌 *ตัวเลข:* {event.event}",
+            f"🏛️ *ประเทศ/สกุลเงิน:* {currency} | ⏰ *เวลาประกาศ:* {time_str}",
+            f"🎚️ *ระดับผลกระทบ:* {importance}",
+            "",
+            "📈 *ข้อมูลก่อนประกาศ:*",
+            f"• *คาดการณ์ (Forecast):* {forecast}",
+            f"• *ครั้งก่อน (Previous):* {previous}",
+            "• *ประกาศจริง (Actual):* รอประกาศ",
+            "",
+            "💡 *บทวิเคราะห์เตรียมตัวต่อทองคำ XAUUSD:*",
+            prep,
+            "",
+            "⚠️ *โปรดเพิ่มความระมัดระวังก่อนและระหว่างประกาศ*",
+            "",
+            "_Not Financial Advice_",
+        ]
+        return await self._send("\n".join(lines))
+
+    async def send_economic_release_alert(self, event: EconomicEvent) -> bool:
+        """
+        3.1 Economic Data Release — หลังประกาศ Actual
+        ตาม skill.md พร้อม Surprise Delta (score)
+        """
+        time_str = event.time.strftime("%H:%M") if event.time else datetime.now(self.tz).strftime("%H:%M")
+        currency = event.currency or event.country or "-"
+        source = event.source or "Economic Calendar"
+        actual = event.actual or "ไม่พบข้อมูล"
+        forecast = event.forecast or "ไม่พบข้อมูล"
+        previous = event.previous or "ไม่พบข้อมูล"
+
+        delta = event.calculate_surprise()
+        if delta is None:
+            surprise_line = "• *Surprise Delta:* ไม่พบข้อมูล"
+            score_line = "• *Impact Score:* N/A"
+        else:
+            unit = f" {event.unit}" if event.unit else ""
+            surprise_line = f"• *Surprise Delta:* {delta:+.4g}{unit}"
+            # Impact Score: ขนาด surprise เทียบเกณฑ์ (0–100 clip)
+            threshold = float(getattr(self.settings, "high_surprise_delta", 0.2) or 0.2)
+            raw = abs(delta) / threshold * 50.0
+            score = max(0, min(100, round(raw)))
+            direction = "สูงกว่าคาด" if delta > 0 else "ต่ำกว่าคาด" if delta < 0 else "ตรงคาด"
+            score_line = f"• *Impact Score:* {score}/100 ({direction})"
+
+        analysis = event.impact_on_gold or self.analyzer._event_to_impact(event).analysis
+
+        lines = [
+            "📊 *[ECONOMIC DATA RELEASE] ประกาศตัวเลขเศรษฐกิจ*",
+            "",
+            f"📌 *ตัวเลข:* {event.event}",
+            f"🏛️ *ประเทศ/สกุลเงิน:* {currency} | ⏰ *เวลาประกาศ:* {time_str}",
+            f"📰 *แหล่งข้อมูล:* {source}",
+            "",
+            "📈 *ผลการประกาศ:*",
+            f"• *ประกาศจริง (Actual):* {actual}",
+            f"• *คาดการณ์ (Forecast):* {forecast}",
+            f"• *ครั้งก่อน (Previous):* {previous}",
+            surprise_line,
+            score_line,
+            "",
+            "💡 *บทวิเคราะห์ต่อทองคำ XAUUSD:*",
+            analysis,
+            "",
+            "_การวิเคราะห์เพื่อข้อมูลเท่านั้น | Not Financial Advice_",
+        ]
+        return await self._send("\n".join(lines))
 
     async def send_full_report(
         self,
