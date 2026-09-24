@@ -155,3 +155,33 @@ def test_flash_alert_template_matches_skill_structure():
     assert "สงคราม" not in text
     assert "score " not in text
     assert "conf " not in text
+
+
+def test_sent_flash_store_persists(tmp_path):
+    from src.sent_store import SentFlashStore
+    store_path = tmp_path / "sent_flash.json"
+    s1 = SentFlashStore(store_path)
+    assert s1.add("abc123") is True
+    assert s1.add("abc123") is False
+    s2 = SentFlashStore(store_path)
+    assert s2.has("abc123") is True
+    assert s2.add("abc123") is False
+
+
+def test_flash_fingerprint_same_title_source():
+    from datetime import datetime
+    import pytz
+    from src.news_scanner import FlashNews
+    n1 = FlashNews(
+        title_th="t",
+        title_en="Kevin Warsh and the Fed",
+        source="CNBC Top News",
+        time=datetime.now(pytz.UTC),
+    )
+    n2 = FlashNews(
+        title_th="t2",
+        title_en="Kevin Warsh and the Fed",
+        source="CNBC Top News",
+        time=datetime.now(pytz.UTC),
+    )
+    assert n1.fingerprint() == n2.fingerprint()

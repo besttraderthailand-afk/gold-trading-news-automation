@@ -15,6 +15,7 @@ from config.settings import get_settings
 from src.calendar_scanner import CalendarScanner
 from src.news_scanner import NewsScanner
 from src.telegram_bot import TelegramReporter
+from src.sent_store import SentFlashStore
 
 
 class AutomationScheduler:
@@ -25,7 +26,8 @@ class AutomationScheduler:
         self.calendar = CalendarScanner()
         self.news = NewsScanner()
         self.telegram = TelegramReporter()
-        self._last_high_impact_ids = set()
+        self._sent_store = SentFlashStore()
+        self._seeded_existing = False
 
     async def run_daily_report(self):
         """รันรายงานประจำวัน 07:00 น."""
@@ -59,19 +61,32 @@ class AutomationScheduler:
             news_list = await self.news.scan(hours_back=1)
             high_news = self.news.get_high_impact_only(news_list)
 
+            # ครั้งแรกหลังสตาร์ทเมื่อ store ว่าง: จำข่าวในหน้าต่างปัจจุบันโดยไม่ส่ง
+            # ป้องกันยิงซ้ำหลังรีสตาร์ท/อัปเดต
+            if not self._seeded_existing and len(self._sent_store.known()) == 0 and high_news:
+                for news in high_news:
+                    self._sent_store.add(news.fingerprint())
+                self._seeded_existing = True
+                logger.info(
+                    f"Seeded {len(high_news)} existing flash items into sent store (no send)"
+                )
+                return
+
+            self._seeded_existing = True
+
             for news in high_news:
                 fp = news.fingerprint()
-                if fp in self._last_high_impact_ids:
+                # Claim on disk first so restart / dual process won't re-send
+                if not self._sent_store.add(fp):
                     continue
 
-                # ส่งเฉพาะข่าวใหม่ที่ยังไม่เคยแจ้ง
-                self._last_high_impact_ids.add(fp)
-                await self.telegram.send_flash_alert(news)
-                logger.info(f"Flash alert sent: {news.title_en[:60]}")
-
-            # จำกัด memory
-            if len(self._last_high_impact_ids) > 100:
-                self._last_high_impact_ids = set(list(self._last_high_impact_ids)[-50:])
+                ok = await self.telegram.send_flash_alert(news)
+                if ok is False:
+                    logger.error(
+                        f"Flash alert failed (kept in sent store to avoid spam): {news.title_en[:60]}"
+                    )
+                else:
+                    logger.info(f"Flash alert sent: {news.title_en[:60]}")
 
         except Exception as e:
             logger.exception(f"Flash monitor error: {e}")
