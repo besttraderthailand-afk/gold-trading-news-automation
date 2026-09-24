@@ -1,5 +1,5 @@
 """
-Scheduler สำหรับ Daily Report + Flash News Monitor
+Scheduler สำหรับ Daily Report + Flash News + Economic Release Monitor
 """
 from __future__ import annotations
 
@@ -91,6 +91,76 @@ class AutomationScheduler:
         except Exception as e:
             logger.exception(f"Flash monitor error: {e}")
 
+
+    def _event_key(self, event, phase: str) -> str:
+        """Stable id for pre/post alerts."""
+        import hashlib
+        t = event.time.isoformat() if event.time else ""
+        eid = getattr(event, "event_id", "") or ""
+        raw = f"{phase}|{eid}|{event.event}|{t}|{event.country}|{event.currency}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _has_actual(self, event) -> bool:
+        a = (event.actual or "").strip()
+        return a not in ("", "-", "—", "N/A", "None", "n/a")
+
+    async def run_calendar_monitor(self):
+        """
+        ตรวจปฏิทินเศรษฐกิจ:
+        - ก่อนประกาศ ~ pre_release_alert_minutes (medium/high ที่ยังไม่มี Actual)
+        - หลังประกาศทันทีเมื่อมี Actual (Economic Data Release + Surprise/Score)
+        """
+        logger.debug("Running calendar release monitor...")
+        try:
+            now = datetime.now(self.tz)
+            events = await self.calendar.fetch_events()
+            events = self.calendar.filter_medium_high(events)
+            pre_mins = int(getattr(self.settings, "pre_release_alert_minutes", 30) or 30)
+
+            for ev in events:
+                if not ev.time:
+                    continue
+                # normalize tz
+                et = ev.time
+                if et.tzinfo is None:
+                    et = self.tz.localize(et)
+                else:
+                    et = et.astimezone(self.tz)
+
+                minutes_to = (et - now).total_seconds() / 60.0
+
+                # Pre-release: within window, not yet released
+                if (not self._has_actual(ev)) and 0 < minutes_to <= pre_mins:
+                    key = self._event_key(ev, "pre")
+                    if not self._sent_store.add(key):
+                        continue
+                    ok = await self.telegram.send_pre_release_alert(ev)
+                    if ok is False:
+                        logger.error(f"Pre-release alert failed: {ev.event}")
+                    else:
+                        logger.info(f"Pre-release alert sent: {ev.event} in {minutes_to:.0f}m")
+
+                # Post-release: has Actual, event time not too far in future, within last 6h
+                if self._has_actual(ev) and minutes_to <= 5:
+                    age_min = (now - et).total_seconds() / 60.0
+                    if age_min > 360:  # older than 6h — skip
+                        continue
+                    key = self._event_key(ev, "post")
+                    if not self._sent_store.add(key):
+                        continue
+                    # refresh gold impact with surprise
+                    ev.calculate_surprise()
+                    if hasattr(self.calendar, "_assess_gold_impact"):
+                        ev.impact_on_gold = self.calendar._assess_gold_impact(ev)
+                    ok = await self.telegram.send_economic_release_alert(ev)
+                    if ok is False:
+                        logger.error(f"Economic release alert failed: {ev.event}")
+                    else:
+                        logger.info(f"Economic release alert sent: {ev.event}")
+
+        except Exception as e:
+            logger.exception(f"Calendar monitor error: {e}")
+
     def start(self):
         """เริ่ม Scheduler"""
         # Daily Report ทุกวัน 07:00 น. เวลาไทย
@@ -103,6 +173,18 @@ class AutomationScheduler:
             ),
             id="daily_report",
             name="Daily Gold Trading Report",
+            replace_existing=True,
+        )
+
+
+        # Economic calendar: pre-release + post Actual
+        self.scheduler.add_job(
+            self.run_calendar_monitor,
+            trigger=IntervalTrigger(
+                minutes=getattr(self.settings, "calendar_check_interval_minutes", 2),
+            ),
+            id="calendar_monitor",
+            name="Economic Calendar Release Monitor",
             replace_existing=True,
         )
 
@@ -120,7 +202,8 @@ class AutomationScheduler:
         self.scheduler.start()
         logger.info(
             f"Scheduler started | Daily Report @ {self.settings.daily_report_hour:02d}:{self.settings.daily_report_minute:02d} ICT | "
-            f"Flash check every {self.settings.flash_check_interval_minutes} min"
+            f"Flash check every {self.settings.flash_check_interval_minutes} min | "
+            f"Calendar every {getattr(self.settings, 'calendar_check_interval_minutes', 2)} min"
         )
 
     def stop(self):
