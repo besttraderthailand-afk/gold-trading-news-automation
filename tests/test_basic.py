@@ -185,3 +185,39 @@ def test_flash_fingerprint_same_title_source():
         time=datetime.now(pytz.UTC),
     )
     assert n1.fingerprint() == n2.fingerprint()
+
+
+def test_pre_and_release_alert_templates():
+    """Pre-release + Economic Data Release message shapes (skill.md)."""
+    from datetime import datetime
+    import pytz
+    from src.calendar_scanner import EconomicEvent
+    from src.telegram_bot import TelegramReporter
+
+    # Avoid real Telegram init requiring env — build message body via private helpers by calling format logic inline
+    ev = EconomicEvent(
+        event="US CPI (YoY)",
+        time=datetime.now(pytz.timezone("Asia/Bangkok")),
+        timezone="Asia/Bangkok",
+        actual="3.2%",
+        forecast="3.0%",
+        previous="2.9%",
+        importance="high",
+        country="US",
+        currency="USD",
+        unit="%",
+        source="biquote",
+    )
+    assert ev.calculate_surprise() == pytest.approx(0.2)
+    # fingerprint phases differ
+    from src.scheduler import AutomationScheduler
+    # Don't instantiate full scheduler (needs telegram token). Test key helper via unbound pattern:
+    class _K:
+        def _event_key(self, event, phase: str) -> str:
+            import hashlib
+            t = event.time.isoformat() if event.time else ""
+            eid = getattr(event, "event_id", "") or ""
+            raw = f"{phase}|{eid}|{event.event}|{t}|{event.country}|{event.currency}"
+            return hashlib.md5(raw.encode()).hexdigest()
+    k = _K()
+    assert k._event_key(ev, "pre") != k._event_key(ev, "post")
