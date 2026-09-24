@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     daily_report_hour: int = Field(default=7, env="DAILY_REPORT_HOUR")
     daily_report_minute: int = Field(default=0, env="DAILY_REPORT_MINUTE")
     flash_check_interval_minutes: int = Field(default=5, env="FLASH_CHECK_INTERVAL_MINUTES")
+    calendar_check_interval_minutes: int = Field(default=2, env="CALENDAR_CHECK_INTERVAL_MINUTES")
+    pre_release_alert_minutes: int = Field(default=30, env="PRE_RELEASE_ALERT_MINUTES")
 
     # Thresholds
     high_surprise_delta: float = Field(default=0.2, env="HIGH_SURPRISE_DELTA")
